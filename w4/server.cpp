@@ -9,18 +9,39 @@
 static std::vector<Entity> entities;
 static std::map<uint16_t, ENetPeer*> controlledMap;
 
-static uint16_t create_random_entity()
+static uint16_t create_random_entity(bool isBot)
 {
   uint16_t newEid = entities.size();
   uint32_t color = 0xff000000 +
-                   0x00440000 * (1 + rand() % 4) +
-                   0x00004400 * (1 + rand() % 4) +
-                   0x00000044 * (1 + rand() % 4);
+                   0x00550000 * (1 + rand() % 3) +
+                   0x00005500 * (1 + rand() % 3) +
+                   0x00000055 * (1 + rand() % 3);
   float x = (rand() % 40 - 20) * 5.f;
   float y = (rand() % 40 - 20) * 5.f;
   Entity ent = {color, x, y, newEid, false, 0.f, 0.f};
+
+  if (isBot)
+  {
+    ent.serverControlled = true;
+    sprintf_s(ent.name, "bot-%i", entities.size());
+  }
+  else
+    sprintf_s(ent.name, "player-%i", entities.size());
+
   entities.push_back(ent);
   return newEid;
+}
+
+void respawn(Entity& ent)
+{
+  ent.x = (rand() % 40 - 20) * 5.f;
+  ent.y = (rand() % 40 - 20) * 5.f;
+  ent.radius = spawn_radius;
+  ent.immune_time = spawn_immune_time;
+  ent.is_immune = true;
+
+  if (!ent.serverControlled)
+    ent.radius *= 2;
 }
 
 void on_join(ENetPacket *packet, ENetPeer *peer, ENetHost *host)
@@ -30,8 +51,9 @@ void on_join(ENetPacket *packet, ENetPeer *peer, ENetHost *host)
     send_new_entity(peer, ent);
 
   // find max eid
-  uint16_t newEid = create_random_entity();
-  const Entity& ent = entities[newEid];
+  uint16_t newEid = create_random_entity(false);
+  Entity& ent = entities[newEid];
+  ent.radius *= 2;
 
   controlledMap[newEid] = peer;
 
@@ -46,14 +68,31 @@ void on_join(ENetPacket *packet, ENetPeer *peer, ENetHost *host)
 void on_state(ENetPacket *packet)
 {
   uint16_t eid = invalid_entity;
-  float x = 0.f; float y = 0.f;
-  deserialize_entity_state(packet, eid, x, y);
+  float x = 0.f; float y = 0.f; float r = 0.f;
+  deserialize_entity_state(packet, eid, x, y, r);
   for (Entity &e : entities)
     if (e.eid == eid)
     {
       e.x = x;
       e.y = y;
+      e.radius = r;
     }
+}
+
+void on_entity_devour(Entity& hunter, Entity& prey)
+{
+  hunter.radius += prey.radius;
+  respawn(prey);
+
+  if (!hunter.serverControlled)
+  {
+    send_snapshot(controlledMap[hunter.eid], hunter);
+  }
+
+  if (!prey.serverControlled)
+  {
+    send_snapshot(controlledMap[prey.eid], prey);
+  }
 }
 
 int main(int argc, const char **argv)
@@ -80,8 +119,7 @@ int main(int argc, const char **argv)
 
   for (int i = 0; i < numAi; ++i)
   {
-    uint16_t eid = create_random_entity();
-    entities[eid].serverControlled = true;
+    uint16_t eid = create_random_entity(true);
     controlledMap[eid] = nullptr;
   }
 
@@ -132,16 +170,48 @@ int main(int argc, const char **argv)
           e.targetY = (rand() % 40 - 20) * 15.f;
         }
       }
+      
+      if (e.is_immune)
+      {
+        if (e.immune_time > 0.f)
+          e.immune_time -= dt;
+        else
+          e.is_immune = false;
+      }
     }
     for (const Entity &e : entities)
     {
+
       for (size_t i = 0; i < server->peerCount; ++i)
       {
         ENetPeer *peer = &server->peers[i];
         if (controlledMap[e.eid] != peer)
-          send_snapshot(peer, e.eid, e.x, e.y);
+          send_snapshot(peer, e);
       }
     }
+    size_t ent_count = entities.size();
+    for (int i = 0; i < ent_count; ++i)
+      for (int j = i + 1; j < ent_count; ++j)
+      {
+        auto& ent1 = entities.at(i);
+        auto& ent2 = entities.at(j);
+
+        if (ent1.is_immune || ent2.is_immune)
+          continue;
+
+        const double dx = ent2.x - ent1.x;
+        const double dy = ent2.y - ent1.y;
+        const double sum_radius = (ent1.radius + ent2.radius);
+
+        if (dx * dx + dy * dy < sum_radius * sum_radius)
+        {
+          if (ent2.radius > ent1.radius)
+            on_entity_devour(ent2, ent1);
+          else
+            on_entity_devour(ent1, ent2);
+          std::cout << "Devour!\n";
+        }
+      }
     //usleep(400000);
   }
 
