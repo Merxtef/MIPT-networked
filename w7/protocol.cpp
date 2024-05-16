@@ -99,6 +99,10 @@ void deserialize_entity_input(ENetPacket *packet, uint16_t &eid, float &thr, flo
   stream.read(eid);
   stream.read(thrSteerPacked);
   PackedFloat2<uint8_t, 4, 4> thrSteer(thrSteerPacked);
+  Float2 unpacked = thrSteer.unpack(Float2(-1.f, -1.f), Float2(1.f, 1.f));
+
+  thr = unpacked.x;
+  steer = unpacked.y;
 }
 
 void deserialize_snapshot(ENetPacket *packet, uint16_t &eid, float &x, float &y, float &ori)
